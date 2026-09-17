@@ -6,6 +6,16 @@ dependencies beyond Rainmeter's bundled Lua.
 Monday-Thursday are identical in Week A and Week B; only Friday period 3
 differs. Friday's times are corrected from the printed timetable: Mentor
 07:40-07:50, four 50-minute lessons, break 09:30-09:50, day ends 11:30.
+
+This file is shared by three measures (header/week/status/list), each
+configured with a different `Mode=` option in the .ini so they can be
+styled independently while sharing one computation.
+
+Only plain ASCII characters are used in any returned string: Rainmeter's
+String meter renders text via GDI+ using the system codepage, and a
+non-ASCII byte returned from Lua (even a valid UTF-8 sequence) reliably
+comes out garbled (e.g. a middle-dot "\194\183" renders as "A-with-hat
+dot" instead of "."). Stick to ASCII for anything shown on screen.
 ]]
 
 local DAY_NAMES = {[1] = "Sunday", [2] = "Monday", [3] = "Tuesday", [4] = "Wednesday",
@@ -85,6 +95,7 @@ local TIMES_FRIDAY = {
 -- ---------- state (which week is "current", persisted to disk) ----------
 
 local currPath = ""
+local mode = "list"
 local configured = false
 local refWeek, refMondayY, refMondayM, refMondayD
 
@@ -100,6 +111,9 @@ local function SaveState()
   end
 end
 
+-- Re-read on every Update(), not just once: SetWeek() may have been called
+-- via a *different* measure instance (they don't share Lua globals), so
+-- each measure needs to pick the change up from disk on its next cycle.
 local function LoadState()
   local f = io.open(statePath(), "r")
   if not f then return false end
@@ -167,6 +181,8 @@ local function LessonName(p)
   return "Free Period"
 end
 
+-- ASCII-only separator ("-"), never a unicode middle-dot: Rainmeter's
+-- String meter garbles non-ASCII bytes returned from Lua (see file header).
 local function LessonDetail(p)
   if not p.lesson then return "" end
   local teacher, room = p.lesson[3] or "", p.lesson[4] or ""
@@ -174,18 +190,18 @@ local function LessonDetail(p)
   if teacher ~= "" then table.insert(parts, teacher) end
   if room ~= "" then table.insert(parts, room) end
   if #parts == 0 then return "" end
-  return "  (" .. table.concat(parts, " \194\183 ") .. ")"
+  return "  (" .. table.concat(parts, " - ") .. ")"
 end
 
 local function BuildStatusLine(periods, nowMin, currentIdx)
   if currentIdx then
     local p = periods[currentIdx]
-    return "Now: " .. LessonName(p) .. " - ends in " .. (p.endMin - nowMin) ..
+    return "Now: " .. LessonName(p) .. "  -  ends in " .. (p.endMin - nowMin) ..
         " min (" .. MinToHHMM(p.endMin) .. ")"
   end
   local first, last = periods[1], periods[#periods]
   if nowMin < first.startMin then
-    return "School starts at " .. MinToHHMM(first.startMin) .. " - " .. LessonName(first)
+    return "School starts at " .. MinToHHMM(first.startMin) .. "  -  " .. LessonName(first)
   end
   if nowMin >= last.endMin then
     return "School day is over. See you tomorrow!"
@@ -198,24 +214,18 @@ local function BuildStatusLine(periods, nowMin, currentIdx)
   return ""
 end
 
-local function BuildWeekendText(now)
+local function NextSchoolDay(now)
   local daysAhead = (2 - now.wday) % 7
   if daysAhead == 0 then daysAhead = 7 end
   local nextTime = os.time({year = now.year, month = now.month, day = now.day, hour = 12}) + daysAhead * 86400
-  local nextDt = os.date("*t", nextTime)
-  local nextWeek = ComputeCurrentWeek(nextDt.year, nextDt.month, nextDt.day)
-  local periods = GetDayPeriods(nextDt.wday, nextWeek)
-  local first = periods[1]
-  return DAY_NAMES[now.wday] .. ", " .. now.day .. " " .. MONTH_NAMES[now.month] .. " " .. now.year ..
-      "\n\nIt's the weekend - no lessons today.\n\n" ..
-      "Next up: " .. DAY_NAMES[nextDt.wday] .. " " .. nextDt.day .. " " .. MONTH_NAMES[nextDt.month] ..
-      " (Week " .. nextWeek .. ")\nFirst: " .. LessonName(first) .. " at " .. MinToHHMM(first.startMin)
+  return os.date("*t", nextTime)
 end
 
 -- ---------- Rainmeter entry points ----------
 
 function Initialize()
   currPath = SKIN:GetVariable("CURRENTPATH")
+  mode = string.lower(SELF:GetOption("Mode", "list"))
   configured = LoadState()
 end
 
@@ -229,19 +239,34 @@ function SetWeek(letter)
 end
 
 function Update()
+  configured = LoadState() or configured
+
   if not configured then
-    return 0, "Right-click this widget and choose\n'Set Week A' or 'Set Week B'\nto get started."
+    if mode == "list" then
+      return 0, "Right-click this widget and choose\n'Set Week A' or 'Set Week B'\nto get started."
+    end
+    return 0, ""
   end
 
   local now = os.date("*t")
+  local weekLetter = ComputeCurrentWeek(now.year, now.month, now.day)
+  local dateStr = DAY_NAMES[now.wday] .. ", " .. now.day .. " " .. MONTH_NAMES[now.month] .. " " .. now.year
+
   if now.wday == 1 or now.wday == 7 then
-    return 0, BuildWeekendText(now)
+    if mode == "header" then return 0, dateStr end
+    if mode == "week" then return 0, "WEEK " .. weekLetter end
+    if mode == "status" then return 0, "Weekend - no lessons today" end
+    -- mode == "list": preview the next school day
+    local nextDt = NextSchoolDay(now)
+    local nextWeek = ComputeCurrentWeek(nextDt.year, nextDt.month, nextDt.day)
+    local periods = GetDayPeriods(nextDt.wday, nextWeek)
+    local first = periods[1]
+    return 0, "Next up: " .. DAY_NAMES[nextDt.wday] .. " " .. nextDt.day .. " " .. MONTH_NAMES[nextDt.month] ..
+        " (Week " .. nextWeek .. ")\nFirst: " .. LessonName(first) .. " at " .. MinToHHMM(first.startMin)
   end
 
-  local weekLetter = ComputeCurrentWeek(now.year, now.month, now.day)
   local periods = GetDayPeriods(now.wday, weekLetter)
   local nowMin = now.hour * 60 + now.min
-
   local currentIdx = nil
   for i, p in ipairs(periods) do
     if nowMin >= p.startMin and nowMin < p.endMin then
@@ -250,16 +275,15 @@ function Update()
     end
   end
 
-  local lines = {}
-  table.insert(lines, DAY_NAMES[now.wday] .. ", " .. now.day .. " " .. MONTH_NAMES[now.month] ..
-      " " .. now.year .. "   [Week " .. weekLetter .. "]")
-  table.insert(lines, BuildStatusLine(periods, nowMin, currentIdx))
-  table.insert(lines, "")
+  if mode == "header" then return 0, dateStr end
+  if mode == "week" then return 0, "WEEK " .. weekLetter end
+  if mode == "status" then return 0, BuildStatusLine(periods, nowMin, currentIdx) end
 
+  -- mode == "list"
+  local lines = {}
   for i, p in ipairs(periods) do
-    local marker = (i == currentIdx) and "> " or "   "
+    local marker = (i == currentIdx) and "* " or "   "
     table.insert(lines, marker .. MinToHHMM(p.startMin) .. "  " .. LessonName(p) .. LessonDetail(p))
   end
-
   return 0, table.concat(lines, "\n")
 end
