@@ -59,13 +59,16 @@ class WeekPickerDialog(tk.Toplevel):
             ).pack(side="left", padx=8)
 
         self.protocol("WM_DELETE_WINDOW", lambda: self._choose("A"))
-        self.grab_set()
         self.transient(master)
+        self.attributes("-topmost", True)
         self.update_idletasks()
         # center on screen
         w, h = self.winfo_width(), self.winfo_height()
         sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
         self.geometry(f"+{(sw - w) // 2}+{(sh - h) // 2}")
+        self.lift()
+        self.focus_force()
+        self.grab_set()
 
     def _choose(self, week_letter):
         self.result = week_letter
@@ -87,15 +90,14 @@ class CalendarWidget(tk.Tk):
         x, y = pos if pos else (self.winfo_screenwidth() - 320, 40)
         self.geometry(f"300x460+{x}+{y}")
 
+        self._build_ui()
+        self._build_context_menu()
+
         if not ws.is_configured():
-            self.withdraw()
             picker = WeekPickerDialog(self)
             self.wait_window(picker)
             ws.set_current_week(picker.result or "A")
-            self.deiconify()
 
-        self._build_ui()
-        self._build_context_menu()
         self.refresh()
 
     # ---------- UI construction ----------
